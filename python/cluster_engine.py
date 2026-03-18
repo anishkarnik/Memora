@@ -84,6 +84,12 @@ def run_clustering(session) -> dict:
     n_clusters = len(unique_labels)
 
     # ── Map each cluster to a Person ─────────────────────────────────────────
+    # Clear old unnamed persons to prevent new clusters from snapping to stale historic centroids
+    for f in all_faces:
+        f.person_id = None
+    session.query(Person).filter(Person.name.is_(None)).delete(synchronize_session=False)
+    session.flush()
+
     existing_people = session.query(Person).all()
     label_to_person: dict[int, Person] = {}
 
@@ -108,11 +114,6 @@ def run_clustering(session) -> dict:
                 best_person = person
 
         if best_person is not None:
-            # Refine representative embedding toward new data
-            old = bytes_to_embedding(best_person.representative_embedding)
-            updated = (old + centroid) / 2
-            updated = updated / (np.linalg.norm(updated) or 1)
-            best_person.representative_embedding = embedding_to_bytes(updated)
             label_to_person[label] = best_person
         else:
             person = Person(
@@ -128,6 +129,15 @@ def run_clustering(session) -> dict:
     # Assign person_id to each face
     for i, face in enumerate(faces):
         face.person_id = label_to_person[labels[i]].id
+
+    # Recalculate true mean for all person embeddings to prevent centroid drift
+    for person in set(label_to_person.values()):
+        person_faces = [f for f in faces if f.person_id == person.id]
+        if person_faces:
+            p_embeds = np.stack([bytes_to_embedding(f.embedding) for f in person_faces])
+            p_centroid = p_embeds.mean(axis=0).astype(np.float32)
+            p_centroid = p_centroid / (np.linalg.norm(p_centroid) or 1)
+            person.representative_embedding = embedding_to_bytes(p_centroid)
 
     session.commit()
     return {

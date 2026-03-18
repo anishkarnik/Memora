@@ -365,6 +365,12 @@ def start_scan(paths: list[str], job_id: int) -> None:
             db = None
             _update_job(job_id, status="cancelled", completed_at=datetime.utcnow())
         else:
+            # Clear face thumbnail cache before reclustering — person IDs
+            # change during clustering, so stale thumbnails show wrong faces.
+            face_thumb_dir = Path.home() / ".memora" / "face_thumbnails"
+            if face_thumb_dir.exists():
+                for thumb_file in face_thumb_dir.glob("*.jpg"):
+                    thumb_file.unlink(missing_ok=True)
             cluster_engine.run_clustering(db)
             db.close()
             db = None

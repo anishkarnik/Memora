@@ -229,13 +229,8 @@ def recluster(db: Session = Depends(database.get_db)):
     - Only unnamed Person rows are dropped and rebuilt from scratch.
     """
     import cluster_engine
-    # Unassign all faces first so clustering starts with a clean slate
-    db.query(Face).update({"person_id": None})
-    # Delete only unnamed people — named ones survive and act as anchors
-    db.query(Person).filter(Person.name.is_(None)).delete()
-    db.commit()
-    # Clear ALL face thumbnail cache — person IDs get reused after delete,
-    # so stale cached files would show wrong faces for new persons.
+    # Clear ALL face thumbnail cache BEFORE clustering — person IDs get
+    # reused after delete, so stale cached files would show wrong faces.
     if FACE_THUMB_DIR.exists():
         for f in FACE_THUMB_DIR.glob("*.jpg"):
             f.unlink(missing_ok=True)
@@ -280,13 +275,14 @@ def _generate_face_thumbnail(image_path: str, bbox: list, dest: Path) -> None:
 def list_people(db: Session = Depends(database.get_db)):
     people = db.query(Person).all()
     result = []
+    import time
     for p in people:
         face_count = db.query(Face).filter(Face.person_id == p.id).count()
         result.append({
             "id": p.id,
             "name": p.name,
             "face_count": face_count,
-            "face_thumbnail_url": f"/people/{p.id}/face-thumbnail",
+            "face_thumbnail_url": f"/people/{p.id}/face-thumbnail?v={int(time.time())}",
             "created_at": p.created_at.isoformat() if p.created_at else None,
         })
     # Named people first, then unnamed sorted by face count descending
@@ -296,37 +292,41 @@ def list_people(db: Session = Depends(database.get_db)):
 
 @app.get("/people/{person_id}/face-thumbnail")
 def get_face_thumbnail(person_id: int, db: Session = Depends(database.get_db)):
-    """Serve a face-cropped square thumbnail for a person."""
+    """Serve a face-cropped square thumbnail for a person.
+    Always regenerates from DB to avoid stale cache after reclustering."""
+    # Always query DB for the current best face — never trust cached file
+    faces = db.query(Face).filter(Face.person_id == person_id).all()
+    best_face = None
+    best_area = 0
+    for face in faces:
+        bbox = json.loads(face.bbox_json)
+        area = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
+        if area > best_area:
+            best_area = area
+            best_face = face
+
+    if not best_face:
+        raise HTTPException(status_code=404, detail="No face found")
+
+    media = db.query(MediaFile).filter(MediaFile.id == best_face.media_file_id).first()
+    if not media or not Path(media.path).exists():
+        raise HTTPException(status_code=404, detail="Source image not found")
+
     dest = _face_thumb_path(person_id)
-    if not dest.exists():
-        # Pick the face with the largest bbox area (most prominent / clearest shot)
-        faces = db.query(Face).filter(Face.person_id == person_id).all()
-        best_face = None
-        best_area = 0
-        for face in faces:
-            bbox = json.loads(face.bbox_json)
-            area = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
-            if area > best_area:
-                best_area = area
-                best_face = face
-
-        if not best_face:
-            raise HTTPException(status_code=404, detail="No face found")
-
-        media = db.query(MediaFile).filter(MediaFile.id == best_face.media_file_id).first()
-        if not media or not Path(media.path).exists():
-            raise HTTPException(status_code=404, detail="Source image not found")
-
-        try:
-            bbox = json.loads(best_face.bbox_json)
-            _generate_face_thumbnail(media.path, bbox, dest)
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+    try:
+        bbox = json.loads(best_face.bbox_json)
+        _generate_face_thumbnail(media.path, bbox, dest)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
     return FileResponse(
         str(dest),
         media_type="image/jpeg",
-        headers={"Cache-Control": "no-store"},
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0"
+        },
     )
 
 
@@ -438,12 +438,26 @@ def _generate_thumbnail(src: str, dest: Path) -> None:
 
 @app.get("/media/{media_id}/thumbnail")
 def get_thumbnail(media_id: int, db: Session = Depends(database.get_db)):
-    """Serve a 400px cached thumbnail; generate on first request."""
+    """Serve a 400px cached thumbnail; generate on first request.
+    Always validates that the cached thumbnail belongs to the current media row."""
+    media = db.query(MediaFile).filter(MediaFile.id == media_id).first()
+    if not media or not Path(media.path).exists():
+        raise HTTPException(status_code=404, detail="File not found")
+
     thumb = _thumb_path(media_id)
-    if not thumb.exists():
-        media = db.query(MediaFile).filter(MediaFile.id == media_id).first()
-        if not media or not Path(media.path).exists():
-            raise HTTPException(status_code=404, detail="File not found")
+    # Regenerate if thumbnail is missing OR is older than the DB record
+    # (catches stale cache after DB wipe + rescan)
+    needs_regen = not thumb.exists()
+    if not needs_regen and media.processed_at:
+        try:
+            thumb_mtime = thumb.stat().st_mtime
+            db_time = media.processed_at.timestamp()
+            if thumb_mtime < db_time:
+                needs_regen = True
+        except Exception:
+            needs_regen = True
+
+    if needs_regen:
         try:
             _generate_thumbnail(media.path, thumb)
         except Exception:

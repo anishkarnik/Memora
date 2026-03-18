@@ -103,3 +103,32 @@ All data lives in `~/.memora/`:
 1. Add `media_type` column handling in `scanner.py`
 2. Create `python/video_engine.py` (keyframe extraction via cv2)
 3. No schema, API, or frontend changes needed
+
+## Troubleshooting
+
+### Tauri build fails: `icons/icon.ico` not found
+This happens if the default Tauri icon formats are missing on Windows. Fix this by automatically generating the necessary icon formats from your existing PNG file:
+```bash
+npm run tauri icon src-tauri/icons/128x128@2x.png
+```
+
+### Changing embedding models or resetting search index
+If you change the embedding model dimensions or want to do a full rescan from scratch, you must delete the existing FAISS search index structure so the app can rebuild it. Navigate to your user's home directory (e.g. `C:\Users\YourUser\.memora\`) and delete these two files:
+- `clip_index.faiss`
+- `clip_index_map.npy`
+
+*(To restart with a completely fresh database, you can also delete `memora.db`)*
+
+### App still shows "CPU Scanning" when I have a GPU (Windows)
+By default, running `pip install torch` on Windows will only download the CPU version of PyTorch. Furthermore, `faiss-gpu` is not officially available on pip for Windows, which causes errors when running `pip install -r requirements-gpu.txt`.
+
+To fix this and enable full GPU acceleration:
+1. Force install PyTorch with CUDA 12.1 support:
+   ```bash
+   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+   ```
+2. Skip installing `faiss-gpu` (since the CPU version is fast enough) and just install `onnxruntime-gpu` directly:
+   ```bash
+   pip install onnxruntime-gpu
+   ```
+3. Restart your backend server (`uvicorn main:app`).
