@@ -1,0 +1,14 @@
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+sqlalchemy>=2.0.0
+pillow>=10.3.0
+numpy>=1.26.0
+insightface>=0.7.3
+onnxruntime>=1.17.0
+opencv-python-headless>=4.9.0
+transformers>=4.44.0
+torch>=2.3.0
+faiss-cpu>=1.8.0
+scikit-learn>=1.4.0
+pydantic>=2.7.0
+aiofiles>=23.2.1

@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"Default capabilities for Memora desktop","local":true,"windows":["main"],"permissions":["core:default","dialog:default","fs:read-all","fs:scope-home-recursive","fs:scope-picture-recursive","fs:scope-document-recursive","fs:scope-download-recursive","fs:scope-desktop-recursive"]}}
