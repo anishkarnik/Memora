@@ -77,6 +77,9 @@ class SettingsRequest(BaseModel):
     auto_scan_enabled: bool = False
     caption_model: str = "moondream2"    # moondream2 | florence2 | blip
     embedding_model: str = "clip"         # clip | siglip2
+    performance_profile: str = "auto"     # auto | lite | standard | performance
+    skip_captioning: bool = False
+    skip_face_detection: bool = False
 
 
 # Simple in-memory settings (persisted to ~/.memora/settings.json)
@@ -87,6 +90,9 @@ _SETTINGS_DEFAULTS = {
     "auto_scan_enabled": False,
     "caption_model": "moondream2",
     "embedding_model": "clip",
+    "performance_profile": "auto",
+    "skip_captioning": False,
+    "skip_face_detection": False,
 }
 
 
@@ -115,6 +121,41 @@ def _save_settings(data: dict) -> None:
 @app.get("/health")
 def health():
     return {"status": "ok", "models_loaded": True}
+
+
+# ---------------------------------------------------------------------------
+# System / Hardware
+# ---------------------------------------------------------------------------
+
+@app.get("/system/hardware")
+def system_hardware():
+    import hardware
+    return hardware.get_hardware_info()
+
+
+@app.post("/system/preload-models")
+def preload_models():
+    """Warm up AI models in a background thread so first scan is faster."""
+    def _preload():
+        try:
+            import face_engine
+            face_engine._get_app()
+        except Exception:
+            pass
+        try:
+            import caption_engine
+            caption_engine._load()
+        except Exception:
+            pass
+        try:
+            import clip_engine
+            clip_engine._load()
+        except Exception:
+            pass
+
+    thread = threading.Thread(target=_preload, daemon=True)
+    thread.start()
+    return {"status": "preloading"}
 
 
 # ---------------------------------------------------------------------------
@@ -528,6 +569,9 @@ def update_settings(req: SettingsRequest):
         "auto_scan_enabled": req.auto_scan_enabled,
         "caption_model": req.caption_model,
         "embedding_model": req.embedding_model,
+        "performance_profile": req.performance_profile,
+        "skip_captioning": req.skip_captioning,
+        "skip_face_detection": req.skip_face_detection,
     }
     _save_settings(data)
     return data

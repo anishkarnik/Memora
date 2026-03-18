@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { startSidecar, getScanStatus, cancelScan, ScanStatus } from "./api/client";
+import { startSidecar, getScanStatus, cancelScan, preloadModels, getHardwareInfo, ScanStatus } from "./api/client";
 import PeopleTab from "./components/PeopleTab/PeopleTab";
 import GalleryTab from "./components/GalleryTab/GalleryTab";
 import SearchTab from "./components/SearchTab/SearchTab";
@@ -13,11 +13,18 @@ export default function App() {
   const [sidecarReady, setSidecarReady] = useState(false);
   const [sidecarError, setSidecarError] = useState<string | null>(null);
   const [scanStatus, setScanStatus] = useState<ScanStatus | null>(null);
+  const [hasCuda, setHasCuda] = useState<boolean | null>(null);
 
-  // Start sidecar on mount
+  // Start sidecar on mount, then preload models and fetch hardware info
   useEffect(() => {
     startSidecar()
-      .then(() => setSidecarReady(true))
+      .then(() => {
+        setSidecarReady(true);
+        preloadModels().catch(() => {});
+        getHardwareInfo()
+          .then((hw) => setHasCuda(hw.has_cuda))
+          .catch(() => {});
+      })
       .catch((err) => setSidecarError(String(err)));
   }, []);
 
@@ -78,7 +85,14 @@ export default function App() {
         <div className="scan-progress-bar">
           {isScanning ? (
             <>
-              <span>Scanning… {scanStatus?.progress_pct ?? 0}%</span>
+              <span>
+                {hasCuda != null && (
+                  <span style={{ fontSize: 10, marginRight: 6, opacity: 0.7 }}>
+                    {hasCuda ? "GPU" : "CPU"}
+                  </span>
+                )}
+                Scanning... {scanStatus?.progress_pct ?? 0}%
+              </span>
               <div className="progress-track">
                 <div
                   className="progress-fill"

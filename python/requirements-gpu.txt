@@ -1,0 +1,5 @@
+# Optional GPU acceleration — install INSTEAD of base onnxruntime/faiss-cpu:
+#   pip install -r requirements-gpu.txt
+onnxruntime-gpu>=1.17.0
+faiss-gpu>=1.8.0
+# Requires CUDA toolkit 11.8+ installed on the system

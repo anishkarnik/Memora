@@ -37,6 +37,9 @@ a = Analysis(
         "sklearn.neighbors._dist_metrics",
         # FAISS
         "faiss",
+        # Hardware detection
+        "psutil",
+        "hardware",
     ],
     hookspath=[],
     hooksconfig={},

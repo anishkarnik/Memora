@@ -72,12 +72,33 @@ def _load():
         ).to(_device)
 
     _model.eval()
+
+    # GPU: use float16 for ~2x throughput and lower VRAM
+    if _device == "cuda":
+        _model = _model.half()
+    # CPU lite mode: int8 dynamic quantization
+    elif _device == "cpu":
+        import hardware
+        if hardware.get_profile() == "lite":
+            _model = torch.quantization.quantize_dynamic(
+                _model, {torch.nn.Linear}, dtype=torch.qint8
+            )
+
     _loaded_model_name = model_name
 
 
 def _normalize(emb: np.ndarray) -> np.ndarray:
     norm = np.linalg.norm(emb)
     return emb / norm if norm > 0 else emb
+
+
+def _inference_context():
+    """Return autocast context manager for CUDA float16, or nullcontext."""
+    import torch
+    if _device == "cuda":
+        return torch.autocast("cuda")
+    from contextlib import nullcontext
+    return nullcontext()
 
 
 def embed_image(image_path: str) -> Optional[np.ndarray]:
@@ -89,23 +110,70 @@ def embed_image(image_path: str) -> Optional[np.ndarray]:
 
         image = Image.open(image_path).convert("RGB")
 
-        if _loaded_model_name == "siglip2":
-            inputs = _processor(images=[image], return_tensors="pt").to(_device)
-            with torch.no_grad():
-                features = _model.get_image_features(**inputs)
-            emb = features[0].cpu().numpy().astype(np.float32)
-        else:  # clip
-            inputs = _processor(images=image, return_tensors="pt").to(_device)
-            with torch.no_grad():
-                features = _model.get_image_features(**inputs)
-            if hasattr(features, "pooler_output"):
-                emb = features.pooler_output[0].cpu().numpy().astype(np.float32)
-            else:
-                emb = features[0].cpu().numpy().astype(np.float32)
+        with _inference_context():
+            if _loaded_model_name == "siglip2":
+                inputs = _processor(images=[image], return_tensors="pt").to(_device)
+                with torch.no_grad():
+                    features = _model.get_image_features(**inputs)
+                emb = features[0].cpu().float().numpy().astype(np.float32)
+            else:  # clip
+                inputs = _processor(images=image, return_tensors="pt").to(_device)
+                with torch.no_grad():
+                    features = _model.get_image_features(**inputs)
+                if hasattr(features, "pooler_output"):
+                    emb = features.pooler_output[0].cpu().float().numpy().astype(np.float32)
+                else:
+                    emb = features[0].cpu().float().numpy().astype(np.float32)
 
         return _normalize(emb)
     except Exception:
         return None
+
+
+def embed_images_batch(image_paths: list[str]) -> list[Optional[np.ndarray]]:
+    """Batch-embed multiple images. Returns list of normalized embeddings (None for failures)."""
+    if not image_paths:
+        return []
+    # Fallback to sequential for single image
+    if len(image_paths) == 1:
+        return [embed_image(image_paths[0])]
+
+    try:
+        _load()
+        import torch
+        from PIL import Image
+
+        images = []
+        indices = []  # tracks which original positions succeeded
+        for i, path in enumerate(image_paths):
+            try:
+                images.append(Image.open(path).convert("RGB"))
+                indices.append(i)
+            except Exception:
+                pass
+
+        if not images:
+            return [None] * len(image_paths)
+
+        results: list[Optional[np.ndarray]] = [None] * len(image_paths)
+
+        with _inference_context():
+            if _loaded_model_name == "siglip2":
+                inputs = _processor(images=images, return_tensors="pt", padding=True).to(_device)
+            else:
+                inputs = _processor(images=images, return_tensors="pt", padding=True).to(_device)
+
+            with torch.no_grad():
+                features = _model.get_image_features(**inputs)
+
+            for j, orig_idx in enumerate(indices):
+                emb = features[j].cpu().float().numpy().astype(np.float32)
+                results[orig_idx] = _normalize(emb)
+
+        return results
+    except Exception:
+        # Fallback to sequential on any batch error
+        return [embed_image(p) for p in image_paths]
 
 
 def embed_text(text: str) -> Optional[np.ndarray]:

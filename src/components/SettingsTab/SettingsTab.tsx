@@ -3,10 +3,13 @@ import { open } from "@tauri-apps/plugin-dialog";
 import {
   getSettings,
   updateSettings,
+  getHardwareInfo,
   startScan,
   Settings,
   CaptionModel,
   EmbeddingModel,
+  HardwareInfo,
+  PerformanceProfile,
 } from "../../api/client";
 
 const CAPTION_MODELS: { value: CaptionModel; label: string; meta: string }[] = [
@@ -40,11 +43,27 @@ const EMBEDDING_MODELS: { value: EmbeddingModel; label: string; meta: string }[]
   },
 ];
 
+const PROFILE_OPTIONS: { value: PerformanceProfile; label: string }[] = [
+  { value: "auto", label: "Auto (detect)" },
+  { value: "lite", label: "Lite" },
+  { value: "standard", label: "Standard" },
+  { value: "performance", label: "Performance" },
+];
+
+const PROFILE_COLORS: Record<string, string> = {
+  lite: "#f59e0b",
+  standard: "#3b82f6",
+  performance: "#10b981",
+};
+
 const DEFAULT_SETTINGS: Settings = {
   scan_paths: [],
   auto_scan_enabled: false,
   caption_model: "moondream2",
   embedding_model: "clip",
+  performance_profile: "auto",
+  skip_captioning: false,
+  skip_face_detection: false,
 };
 
 export default function SettingsTab({ onScanStart }: { onScanStart: () => void }) {
@@ -54,12 +73,17 @@ export default function SettingsTab({ onScanStart }: { onScanStart: () => void }
   const [saving, setSaving] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [hwInfo, setHwInfo] = useState<HardwareInfo | null>(null);
 
   useEffect(() => {
-    getSettings().then((s) => {
+    Promise.all([
+      getSettings(),
+      getHardwareInfo().catch(() => null),
+    ]).then(([s, hw]) => {
       const merged = { ...DEFAULT_SETTINGS, ...s };
       setSettings(merged);
       setSavedEmbeddingModel(merged.embedding_model);
+      if (hw) setHwInfo(hw);
     }).finally(() => setLoading(false));
   }, []);
 
@@ -114,13 +138,117 @@ export default function SettingsTab({ onScanStart }: { onScanStart: () => void }
   };
 
   const embeddingModelChanged = settings.embedding_model !== savedEmbeddingModel;
+  const activeProfile = hwInfo?.profile ?? "standard";
+  const isLite = activeProfile === "lite";
 
   if (loading) {
-    return <div className="search-empty" style={{ marginTop: 80 }}><p>Loading settings…</p></div>;
+    return <div className="search-empty" style={{ marginTop: 80 }}><p>Loading settings...</p></div>;
   }
 
   return (
     <div className="settings-wrap">
+
+      {/* System Info */}
+      {hwInfo && (
+        <div className="settings-section">
+          <h2>System</h2>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px 24px", fontSize: 13, marginBottom: 14 }}>
+            <div>
+              <span style={{ color: "var(--text-muted)" }}>CPU: </span>
+              {hwInfo.cpu_cores} cores
+            </div>
+            <div>
+              <span style={{ color: "var(--text-muted)" }}>RAM: </span>
+              {hwInfo.ram_gb} GB
+            </div>
+            <div>
+              <span style={{ color: "var(--text-muted)" }}>GPU: </span>
+              {hwInfo.gpu_name ?? "None"}
+            </div>
+            {hwInfo.gpu_name && (
+              <div>
+                <span style={{ color: "var(--text-muted)" }}>VRAM: </span>
+                {hwInfo.gpu_vram_gb} GB
+              </div>
+            )}
+          </div>
+
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
+            <span style={{ fontSize: 13, color: "var(--text-muted)" }}>Detected profile:</span>
+            <span style={{
+              padding: "2px 10px",
+              borderRadius: 12,
+              fontSize: 12,
+              fontWeight: 600,
+              background: `${PROFILE_COLORS[hwInfo.detected_profile] ?? "#6b7280"}22`,
+              color: PROFILE_COLORS[hwInfo.detected_profile] ?? "#6b7280",
+              border: `1px solid ${PROFILE_COLORS[hwInfo.detected_profile] ?? "#6b7280"}55`,
+            }}>
+              {hwInfo.detected_profile}
+            </span>
+          </div>
+
+          <div style={{ marginBottom: 4 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Performance Profile</div>
+            <select
+              value={settings.performance_profile}
+              onChange={(e) => setSettings((s) => ({ ...s, performance_profile: e.target.value as PerformanceProfile }))}
+              style={{
+                padding: "6px 10px", borderRadius: 6, fontSize: 13,
+                background: "var(--bg-secondary)", color: "var(--text-primary)",
+                border: "1px solid var(--border-color)",
+              }}
+            >
+              {PROFILE_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>{o.label}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+      )}
+
+      {/* Scan Options */}
+      <div className="settings-section">
+        <h2>Scan Options</h2>
+        <div className="toggle-row" style={{ marginBottom: 10 }}>
+          <div>
+            <span style={{ fontSize: 13 }}>Skip captioning</span>
+            <div style={{ fontSize: 11, color: "var(--text-muted)" }}>Saves RAM, disables caption search</div>
+          </div>
+          <label className="toggle">
+            <input
+              type="checkbox"
+              checked={settings.skip_captioning}
+              onChange={(e) => setSettings((s) => ({ ...s, skip_captioning: e.target.checked }))}
+            />
+            <span className="toggle-slider" />
+          </label>
+        </div>
+        <div className="toggle-row">
+          <div>
+            <span style={{ fontSize: 13 }}>Skip face detection</span>
+            <div style={{ fontSize: 11, color: "var(--text-muted)" }}>Saves RAM, disables people tab</div>
+          </div>
+          <label className="toggle">
+            <input
+              type="checkbox"
+              checked={settings.skip_face_detection}
+              onChange={(e) => setSettings((s) => ({ ...s, skip_face_detection: e.target.checked }))}
+            />
+            <span className="toggle-slider" />
+          </label>
+        </div>
+        {isLite && !settings.skip_captioning && !settings.skip_face_detection && (
+          <div style={{
+            marginTop: 10, padding: "8px 12px",
+            background: "rgba(251, 191, 36, 0.1)",
+            border: "1px solid rgba(251, 191, 36, 0.4)",
+            borderRadius: 6, fontSize: 12, color: "#fbbf24",
+          }}>
+            Your system has limited resources. Consider enabling skip options above to reduce memory usage.
+          </div>
+        )}
+      </div>
 
       {/* Scan Paths */}
       <div className="settings-section">
@@ -134,7 +262,7 @@ export default function SettingsTab({ onScanStart }: { onScanStart: () => void }
             {settings.scan_paths.map((p) => (
               <li key={p}>
                 <span>{p}</span>
-                <button onClick={() => removePath(p)} title="Remove">×</button>
+                <button onClick={() => removePath(p)} title="Remove">x</button>
               </li>
             ))}
           </ul>
@@ -171,6 +299,11 @@ export default function SettingsTab({ onScanStart }: { onScanStart: () => void }
                   <span style={{ color: "var(--text-muted)", fontSize: 11, marginLeft: 8 }}>
                     {m.meta}
                   </span>
+                  {isLite && m.value === "moondream2" && (
+                    <span style={{ color: "#f59e0b", fontSize: 11, marginLeft: 6 }} title="May cause out-of-memory on lite systems">
+                      (!) OOM risk
+                    </span>
+                  )}
                 </div>
               </label>
             ))}
@@ -197,6 +330,11 @@ export default function SettingsTab({ onScanStart }: { onScanStart: () => void }
                   <span style={{ color: "var(--text-muted)", fontSize: 11, marginLeft: 8 }}>
                     {m.meta}
                   </span>
+                  {isLite && m.value === "siglip2" && (
+                    <span style={{ color: "#f59e0b", fontSize: 11, marginLeft: 6 }} title="May cause out-of-memory on lite systems">
+                      (!) OOM risk
+                    </span>
+                  )}
                 </div>
               </label>
             ))}
@@ -238,14 +376,14 @@ export default function SettingsTab({ onScanStart }: { onScanStart: () => void }
         <h2>Actions</h2>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
           <button className="btn btn-secondary" onClick={save} disabled={saving}>
-            {saved ? "Saved!" : saving ? "Saving…" : "Save Settings"}
+            {saved ? "Saved!" : saving ? "Saving..." : "Save Settings"}
           </button>
           <button
             className="btn btn-primary"
             onClick={triggerScan}
             disabled={scanning || settings.scan_paths.length === 0}
           >
-            {scanning ? "Starting…" : "Start Scan Now"}
+            {scanning ? "Starting..." : "Start Scan Now"}
           </button>
         </div>
       </div>

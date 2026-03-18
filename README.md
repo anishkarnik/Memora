@@ -6,10 +6,11 @@ A desktop application that brings smartphone-style AI photo intelligence to Wind
 ## Features
 
 - **Face Recognition** — Detects and clusters faces across your photo library. Name people once; they're recognised everywhere.
-- **AI Captions** — BLIP generates natural-language descriptions for every image.
+- **AI Captions** — Choose from Moondream2, Florence-2, or BLIP to generate natural-language descriptions.
 - **Semantic Search** — CLIP lets you search with plain English: *"mountains at sunset"*, *"birthday party"*.
 - **EXIF Metadata** — Date, GPS, camera model extracted and displayed.
 - **Privacy-First** — All AI runs locally via ONNX / HuggingFace transformers. No cloud required.
+- **Adaptive Performance** — Auto-detects hardware (CPU cores, RAM, GPU/VRAM) and scales workers, batch sizes, and precision (float16/int8) accordingly. Three profiles: lite, standard, performance.
 
 ## Architecture
 
@@ -95,7 +96,7 @@ All data lives in `~/.memora/`:
 - `clip_index.faiss` — FAISS vector index for semantic search
 - `clip_index_map.npy` — Maps FAISS row index → media_files.id
 - `models/` — Downloaded AI model weights
-- `settings.json` — App settings (scan paths, auto-scan toggle)
+- `settings.json` — App settings (scan paths, auto-scan, performance profile, model selection)
 
 ## Adding Video Support (future)
 

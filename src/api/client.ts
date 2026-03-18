@@ -119,6 +119,26 @@ export const search = (q: string, limit = 20, personId?: number) => {
   return request<SearchResult>("GET", path);
 };
 
+// ── System / Hardware ────────────────────────────────────────────────────────
+
+export interface HardwareInfo {
+  cpu_cores: number;
+  ram_gb: number;
+  gpu_name: string | null;
+  gpu_vram_gb: number;
+  has_cuda: boolean;
+  profile: PerformanceProfile;
+  detected_profile: PerformanceProfile;
+}
+
+export type PerformanceProfile = "auto" | "lite" | "standard" | "performance";
+
+export const getHardwareInfo = () =>
+  request<HardwareInfo>("GET", "/system/hardware");
+
+export const preloadModels = () =>
+  request<{ status: string }>("POST", "/system/preload-models");
+
 // ── Settings ─────────────────────────────────────────────────────────────────
 
 export type CaptionModel = "moondream2" | "florence2" | "blip";
@@ -129,6 +149,9 @@ export interface Settings {
   auto_scan_enabled: boolean;
   caption_model: CaptionModel;
   embedding_model: EmbeddingModel;
+  performance_profile: PerformanceProfile;
+  skip_captioning: boolean;
+  skip_face_detection: boolean;
 }
 
 export const getSettings = () => request<Settings>("GET", "/settings");

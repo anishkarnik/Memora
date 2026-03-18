@@ -22,7 +22,8 @@ def _get_app():
             root=str(model_dir),
             providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
         )
-        _app.prepare(ctx_id=0, det_size=(640, 640))
+        import hardware
+        _app.prepare(ctx_id=0, det_size=hardware.get_face_det_size())
     return _app
 
 

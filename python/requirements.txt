@@ -12,3 +12,4 @@ faiss-cpu>=1.8.0
 scikit-learn>=1.4.0
 pydantic>=2.7.0
 aiofiles>=23.2.1
+psutil>=5.9.0

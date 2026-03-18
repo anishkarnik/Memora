@@ -20,6 +20,7 @@ MAP_PATH = DATA_DIR / "clip_index_map.npy"
 _lock = threading.Lock()
 _index = None
 _id_map: list[int] = []
+_adds_since_save: int = 0
 
 
 def _get_dim() -> int:
@@ -58,14 +59,29 @@ def _get_index():
 
 def add_embedding(media_file_id: int, embedding: np.ndarray) -> int:
     """Add embedding to index; returns the faiss_index_id (row index)."""
+    global _adds_since_save
+    import hardware
+
     with _lock:
         idx = _get_index()
         vec = embedding.astype(np.float32).reshape(1, idx.d)
         row = idx.ntotal
         idx.add(vec)
         _id_map.append(media_file_id)
-        _save()
+        _adds_since_save += 1
+        if _adds_since_save >= hardware.get_faiss_save_interval():
+            _save()
+            _adds_since_save = 0
         return row
+
+
+def flush() -> None:
+    """Force-save the FAISS index to disk. Call at end of scan or on error."""
+    global _adds_since_save
+    with _lock:
+        if _index is not None and _adds_since_save > 0:
+            _save()
+            _adds_since_save = 0
 
 
 def search(query_embedding: np.ndarray, k: int = 20) -> list[tuple[int, float]]:
