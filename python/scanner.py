@@ -228,7 +228,8 @@ def _try_generate_thumbnail(image_path: str, media_id: int) -> None:
 
 
 def _update_job(job_id: int, **kwargs) -> None:
-    """Single short-lived write to update the ScanJob row."""
+    """Update ScanJob using its own short-lived session.
+    Use only when no other session holds a write transaction."""
     from database import SessionLocal
     from models import ScanJob
 
@@ -244,6 +245,17 @@ def _update_job(job_id: int, **kwargs) -> None:
         raise
     finally:
         db.close()
+
+
+def _update_job_inline(db, job_id: int, **kwargs) -> None:
+    """Update ScanJob on the main scan session — avoids a second writer."""
+    from models import ScanJob
+
+    job = db.query(ScanJob).filter(ScanJob.id == job_id).first()
+    if job:
+        for k, v in kwargs.items():
+            setattr(job, k, v)
+        # No separate commit — piggybacks on the next periodic commit
 
 
 def start_scan(paths: list[str], job_id: int) -> None:
@@ -263,15 +275,20 @@ def start_scan(paths: list[str], job_id: int) -> None:
     with _lock:
         _active_job_id = job_id
 
+    # Use a separate session for status bookends (start/end) so they commit
+    # immediately.  Progress updates inside the loop use the main session
+    # via _update_job_inline to avoid a second concurrent writer on SQLite.
+    _update_job(job_id, status="running", started_at=datetime.utcnow())
+
     db = SessionLocal()
     batch_size = hardware.get_clip_batch_size()
     commit_interval = hardware.get_db_commit_interval()
 
     try:
-        _update_job(job_id, status="running", started_at=datetime.utcnow())
-
         images = _collect_images(paths)
-        _update_job(job_id, total_files=len(images))
+        # total_files is safe via inline — nothing dirty on the session yet
+        _update_job_inline(db, job_id, total_files=len(images))
+        db.commit()
 
         processed = 0
 
@@ -295,10 +312,11 @@ def start_scan(paths: list[str], job_id: int) -> None:
                     except Exception:
                         pass
 
+                    # Update progress on the same session — committed together
+                    _update_job_inline(db, job_id, processed_files=processed, current_file=img_path)
+
                     if processed % commit_interval == 0:
                         db.commit()
-
-                    _update_job(job_id, processed_files=processed, current_file=img_path)
         else:
             # Batch mode (standard/performance profile)
             for i in range(0, len(images), batch_size):
@@ -332,17 +350,19 @@ def start_scan(paths: list[str], job_id: int) -> None:
                         except Exception:
                             pass
 
+                last_file = batch[-1] if batch else None
+                _update_job_inline(db, job_id, processed_files=processed, current_file=last_file)
+
                 if processed % commit_interval == 0:
                     db.commit()
-
-                last_file = batch[-1] if batch else None
-                _update_job(job_id, processed_files=processed, current_file=last_file)
 
         # Final commit for remaining unflushed writes
         db.commit()
         vector_store.flush()
 
         if _cancel_event.is_set():
+            db.close()
+            db = None
             _update_job(job_id, status="cancelled", completed_at=datetime.utcnow())
         else:
             cluster_engine.run_clustering(db)
@@ -358,6 +378,8 @@ def start_scan(paths: list[str], job_id: int) -> None:
             pass
         if db:
             db.rollback()
+            db.close()
+            db = None
         try:
             _update_job(
                 job_id,

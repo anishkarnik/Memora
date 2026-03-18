@@ -8,7 +8,7 @@ export default defineConfig(async () => ({
     port: 5173,
     strictPort: true,
     watch: {
-      ignored: ["**/src-tauri/**"],
+      ignored: ["**/src-tauri/**", "**/python/.venv/**", "**/.venv/**"],
     },
   },
   envPrefix: ["VITE_", "TAURI_ENV_*"],
