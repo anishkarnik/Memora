@@ -105,7 +105,11 @@ def update_person_centroid(person_id: int, session) -> None:
 
 
 def run_clustering(session) -> dict:
-    """Full recluster — preserves named people, rebuilds unnamed clusters.
+    """Recluster — preserves named people and their face assignments.
+
+    Faces assigned to named people are PINNED — they are never unassigned
+    or reclustered. Only faces belonging to unnamed people (or unassigned)
+    are reclustered. This preserves manual merges into named people.
 
     Uses quality-weighted centroids: faces with higher det_score contribute
     more to the person's representative embedding.
@@ -118,31 +122,55 @@ def run_clustering(session) -> dict:
     if not all_faces:
         return {"clusters": 0, "noise": 0, "total_faces": 0}
 
-    # ── Quality filter: skip tiny/unreliable faces ───────────────────────────
-    faces = []
+    # ── Identify named people and their pinned faces ─────────────────────────
+    named_people = session.query(Person).filter(Person.name.isnot(None)).all()
+    named_person_ids = {p.id for p in named_people}
+
+    # ── Quality filter + separate pinned vs free faces ───────────────────────
+    pinned_faces = []   # belong to named people — do NOT recluster
+    free_faces = []     # will be reclustered
     skipped = 0
+
     for f in all_faces:
         bbox = json.loads(f.bbox_json)
         w = bbox[2] - bbox[0]
         h = bbox[3] - bbox[1]
-        if w * h >= MIN_FACE_AREA:
-            faces.append(f)
-        else:
+        if w * h < MIN_FACE_AREA:
             skipped += 1
-            f.person_id = None  # unassign tiny faces
+            f.person_id = None
+            continue
 
-    if not faces:
+        if f.person_id in named_person_ids:
+            pinned_faces.append(f)
+        else:
+            free_faces.append(f)
+
+    # Clear unnamed persons — they'll be rebuilt from clustering
+    for f in free_faces:
+        f.person_id = None
+    session.query(Person).filter(Person.name.is_(None)).delete(synchronize_session=False)
+    session.flush()
+
+    # Recalculate named people centroids from their pinned faces
+    for person in named_people:
+        update_person_centroid(person.id, session)
+
+    if not free_faces:
         session.commit()
-        return {"clusters": 0, "noise": skipped, "total_faces": len(all_faces)}
+        return {
+            "clusters": 0,
+            "noise": skipped,
+            "total_faces": len(all_faces),
+            "pinned": len(pinned_faces),
+        }
 
-    embeddings = np.stack([bytes_to_embedding(f.embedding) for f in faces])
+    # ── Cluster only free (non-pinned) faces ─────────────────────────────────
+    embeddings = np.stack([bytes_to_embedding(f.embedding) for f in free_faces])
 
-    # ── Normalise embeddings ─────────────────────────────────────────────────
     norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
     normed = embeddings / np.where(norms > 0, norms, 1)
 
-    # ── Agglomerative clustering (average linkage, cosine distance) ──────────
-    if len(faces) == 1:
+    if len(free_faces) == 1:
         labels = np.array([0])
     else:
         cosine_dist = np.clip(1 - normed @ normed.T, 0, 2)
@@ -155,32 +183,25 @@ def run_clustering(session) -> dict:
                 linkage="average",
             ).fit_predict(cosine_dist)
         except Exception as e:
-            return {"clusters": 0, "noise": 0, "total_faces": len(faces), "error": str(e)}
+            return {"clusters": 0, "noise": 0, "total_faces": len(all_faces), "error": str(e)}
 
     unique_labels = set(labels)
     n_clusters = len(unique_labels)
 
     # ── Map each cluster to a Person ─────────────────────────────────────────
-    # Clear old unnamed persons to prevent new clusters from snapping to stale historic centroids
-    for f in all_faces:
-        f.person_id = None
-    session.query(Person).filter(Person.name.is_(None)).delete(synchronize_session=False)
-    session.flush()
-
-    existing_people = session.query(Person).all()
+    # Named people are candidates for matching (they survived the delete above)
+    existing_people = list(named_people)
     label_to_person: dict[int, Person] = {}
 
-    # Collect per-face quality scores for weighted centroids
     det_scores = np.array([
         f.det_score if f.det_score is not None else 0.5
-        for f in faces
+        for f in free_faces
     ], dtype=np.float32)
 
     for label in sorted(unique_labels):
         mask = labels == label
         cluster_embeddings = normed[mask]
         cluster_scores = det_scores[mask]
-        cluster_faces = [f for f, m in zip(faces, mask) if m]
 
         # Quality-weighted centroid
         weights = cluster_scores / (cluster_scores.sum() or 1.0)
@@ -189,7 +210,7 @@ def run_clustering(session) -> dict:
         if centroid_norm > 0:
             centroid = centroid / centroid_norm
 
-        # Named people first, then unnamed — pick best match above threshold
+        # Try to match to existing people (named or already-created unnamed)
         best_person: Optional[Person] = None
         best_sim = 0.0
         for person in existing_people:
@@ -214,18 +235,19 @@ def run_clustering(session) -> dict:
             label_to_person[label] = person
             existing_people.append(person)
 
-    # Assign person_id to each face
-    for i, face in enumerate(faces):
+    # Assign person_id to each free face
+    for i, face in enumerate(free_faces):
         face.person_id = label_to_person[labels[i]].id
 
-    # Recalculate quality-weighted mean for all person embeddings
-    for person in set(label_to_person.values()):
-        person_faces = [f for f in faces if f.person_id == person.id]
-        if person_faces:
-            p_embeds = np.stack([bytes_to_embedding(f.embedding) for f in person_faces])
+    # Recalculate centroids for all people that got new faces
+    affected_people = set(label_to_person.values())
+    for person in affected_people:
+        all_person_faces = session.query(Face).filter(Face.person_id == person.id).all()
+        if all_person_faces:
+            p_embeds = np.stack([bytes_to_embedding(f.embedding) for f in all_person_faces])
             p_scores = np.array([
                 f.det_score if f.det_score is not None else 0.5
-                for f in person_faces
+                for f in all_person_faces
             ], dtype=np.float32)
             p_weights = p_scores / (p_scores.sum() or 1.0)
             p_centroid = (p_embeds * p_weights[:, np.newaxis]).sum(axis=0).astype(np.float32)
@@ -239,5 +261,6 @@ def run_clustering(session) -> dict:
         "clusters": n_clusters,
         "noise": skipped,
         "total_faces": len(all_faces),
+        "pinned": len(pinned_faces),
         "quality_filtered": skipped,
     }

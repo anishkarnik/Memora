@@ -355,6 +355,8 @@ def set_person_name(person_id: int, req: NameRequest, db: Session = Depends(data
 
 @app.post("/people/merge")
 def merge_people(req: MergeRequest, db: Session = Depends(database.get_db)):
+    import cluster_engine
+
     source = db.query(Person).filter(Person.id == req.source_id).first()
     target = db.query(Person).filter(Person.id == req.target_id).first()
     if not source or not target:
@@ -365,6 +367,10 @@ def merge_people(req: MergeRequest, db: Session = Depends(database.get_db)):
         {"person_id": req.target_id}
     )
     db.delete(source)
+    db.flush()
+
+    # Recalculate target centroid with the newly merged faces
+    cluster_engine.update_person_centroid(req.target_id, db)
     db.commit()
     return {"merged_into": req.target_id}
 
