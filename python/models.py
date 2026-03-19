@@ -24,6 +24,7 @@ class MediaFile(Base):
     gps_lon = Column(Float)
     camera_model = Column(String)
     caption = Column(Text)
+    tags = Column(Text)  # JSON list of searchable tags (scene, colors, objects, etc.)
     faiss_index_id = Column(Integer, unique=True)
     processed_at = Column(DateTime, default=datetime.utcnow)
     media_type = Column(String, default="image")  # future: "video"
@@ -38,6 +39,7 @@ class Face(Base):
     media_file_id = Column(Integer, ForeignKey("media_files.id"), nullable=False, index=True)
     bbox_json = Column(Text, nullable=False)  # JSON: [x1, y1, x2, y2]
     embedding = Column(LargeBinary, nullable=False)  # 512-d float32 blob
+    det_score = Column(Float, nullable=True)  # detection confidence 0-1
     person_id = Column(Integer, ForeignKey("people.id"), nullable=True, index=True)
 
     media_file = relationship("MediaFile", back_populates="faces")

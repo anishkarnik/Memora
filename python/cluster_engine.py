@@ -9,6 +9,11 @@ Why not DBSCAN:
 Why Agglomerative + average linkage:
   Merges two clusters only when the AVERAGE distance between all their members
   is below the threshold. No chaining. Tight, clean clusters.
+
+Incremental assignment:
+  New faces from a scan are first matched against existing person centroids.
+  Only truly novel faces (no match) are batch-clustered. This prevents the
+  instability of full recluster on every scan.
 """
 from datetime import datetime
 from typing import Optional
@@ -19,10 +24,6 @@ import numpy as np
 # InsightFace buffalo_sc: same-person ~0.2-0.4, different-person ~0.5+
 DISTANCE_THRESHOLD = 0.45
 
-# Minimum detection confidence score to use a face embedding.
-# Low-confidence detections (small/blurry/profile) produce noisy embeddings.
-MIN_DET_SCORE = 0.0   # set > 0 once det_score is stored; filtered by bbox size for now
-
 # Minimum face bbox area (px²) — tiny faces yield unreliable embeddings
 MIN_FACE_AREA = 1600  # 40×40 px minimum
 
@@ -31,8 +32,84 @@ NAMED_MERGE_THRESHOLD = 0.60
 # Similarity threshold to match to an existing UNNAMED person
 UNNAMED_MERGE_THRESHOLD = 0.55
 
+# Similarity threshold for incremental assignment (slightly stricter than
+# cluster merge to avoid false assignments during scan)
+INCREMENTAL_ASSIGN_THRESHOLD = 0.55
+
+
+def assign_face_to_person(face_embedding: np.ndarray, session) -> Optional[int]:
+    """Try to assign a single face to an existing person by centroid similarity.
+
+    Returns person_id if matched, None if no match (needs batch clustering later).
+    This is called during scan to incrementally assign faces without full recluster.
+    """
+    from models import Person
+    from face_engine import bytes_to_embedding, cosine_similarity
+
+    emb = face_embedding.astype(np.float32)
+    norm = np.linalg.norm(emb)
+    if norm > 0:
+        emb = emb / norm
+
+    people = session.query(Person).filter(Person.representative_embedding.isnot(None)).all()
+    if not people:
+        return None
+
+    best_person_id = None
+    best_sim = 0.0
+
+    for person in people:
+        centroid = bytes_to_embedding(person.representative_embedding)
+        sim = cosine_similarity(emb, centroid)
+        threshold = NAMED_MERGE_THRESHOLD if person.name else INCREMENTAL_ASSIGN_THRESHOLD
+        if sim > threshold and sim > best_sim:
+            best_sim = sim
+            best_person_id = person.id
+
+    return best_person_id
+
+
+def update_person_centroid(person_id: int, session) -> None:
+    """Recalculate a person's representative embedding from all their faces."""
+    from models import Face, Person
+    from face_engine import bytes_to_embedding, embedding_to_bytes
+
+    person = session.query(Person).filter(Person.id == person_id).first()
+    if not person:
+        return
+
+    faces = session.query(Face).filter(Face.person_id == person_id).all()
+    if not faces:
+        return
+
+    embeddings = np.stack([bytes_to_embedding(f.embedding) for f in faces])
+
+    # Quality-weighted mean: higher det_score faces contribute more
+    weights = np.array([
+        f.det_score if f.det_score is not None else 0.5
+        for f in faces
+    ], dtype=np.float32)
+    # Normalize weights
+    weight_sum = weights.sum()
+    if weight_sum > 0:
+        weights = weights / weight_sum
+    else:
+        weights = np.ones(len(faces), dtype=np.float32) / len(faces)
+
+    centroid = (embeddings * weights[:, np.newaxis]).sum(axis=0).astype(np.float32)
+    norm = np.linalg.norm(centroid)
+    if norm > 0:
+        centroid = centroid / norm
+
+    person.representative_embedding = embedding_to_bytes(centroid)
+
 
 def run_clustering(session) -> dict:
+    """Full recluster — preserves named people, rebuilds unnamed clusters.
+
+    Uses quality-weighted centroids: faces with higher det_score contribute
+    more to the person's representative embedding.
+    """
     from models import Face, Person
     from face_engine import bytes_to_embedding, cosine_similarity, embedding_to_bytes
     import json
@@ -93,13 +170,24 @@ def run_clustering(session) -> dict:
     existing_people = session.query(Person).all()
     label_to_person: dict[int, Person] = {}
 
+    # Collect per-face quality scores for weighted centroids
+    det_scores = np.array([
+        f.det_score if f.det_score is not None else 0.5
+        for f in faces
+    ], dtype=np.float32)
+
     for label in sorted(unique_labels):
         mask = labels == label
         cluster_embeddings = normed[mask]
+        cluster_scores = det_scores[mask]
         cluster_faces = [f for f, m in zip(faces, mask) if m]
 
-        centroid = cluster_embeddings.mean(axis=0).astype(np.float32)
-        centroid = centroid / (np.linalg.norm(centroid) or 1)
+        # Quality-weighted centroid
+        weights = cluster_scores / (cluster_scores.sum() or 1.0)
+        centroid = (cluster_embeddings * weights[:, np.newaxis]).sum(axis=0).astype(np.float32)
+        centroid_norm = np.linalg.norm(centroid)
+        if centroid_norm > 0:
+            centroid = centroid / centroid_norm
 
         # Named people first, then unnamed — pick best match above threshold
         best_person: Optional[Person] = None
@@ -130,13 +218,20 @@ def run_clustering(session) -> dict:
     for i, face in enumerate(faces):
         face.person_id = label_to_person[labels[i]].id
 
-    # Recalculate true mean for all person embeddings to prevent centroid drift
+    # Recalculate quality-weighted mean for all person embeddings
     for person in set(label_to_person.values()):
         person_faces = [f for f in faces if f.person_id == person.id]
         if person_faces:
             p_embeds = np.stack([bytes_to_embedding(f.embedding) for f in person_faces])
-            p_centroid = p_embeds.mean(axis=0).astype(np.float32)
-            p_centroid = p_centroid / (np.linalg.norm(p_centroid) or 1)
+            p_scores = np.array([
+                f.det_score if f.det_score is not None else 0.5
+                for f in person_faces
+            ], dtype=np.float32)
+            p_weights = p_scores / (p_scores.sum() or 1.0)
+            p_centroid = (p_embeds * p_weights[:, np.newaxis]).sum(axis=0).astype(np.float32)
+            p_norm = np.linalg.norm(p_centroid)
+            if p_norm > 0:
+                p_centroid = p_centroid / p_norm
             person.representative_embedding = embedding_to_bytes(p_centroid)
 
     session.commit()

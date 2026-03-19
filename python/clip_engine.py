@@ -159,16 +159,27 @@ def embed_images_batch(image_paths: list[str]) -> list[Optional[np.ndarray]]:
 
         with _inference_context():
             if _loaded_model_name == "siglip2":
+                # SigLIP processor can take padding=True for images if it wants,
+                # though usually image inputs are resized/cropped uniformly.
                 inputs = _processor(images=images, return_tensors="pt", padding=True).to(_device)
+                with torch.no_grad():
+                    features = _model.get_image_features(**inputs)
+                
+                for j, orig_idx in enumerate(indices):
+                    emb = features[j].cpu().float().numpy().astype(np.float32)
+                    results[orig_idx] = _normalize(emb)
             else:
-                inputs = _processor(images=images, return_tensors="pt", padding=True).to(_device)
-
-            with torch.no_grad():
-                features = _model.get_image_features(**inputs)
-
-            for j, orig_idx in enumerate(indices):
-                emb = features[j].cpu().float().numpy().astype(np.float32)
-                results[orig_idx] = _normalize(emb)
+                # CLIP image processor works best with just images, no text-specific kwargs
+                inputs = _processor(images=images, return_tensors="pt").to(_device)
+                with torch.no_grad():
+                    features = _model.get_image_features(**inputs)
+                
+                for j, orig_idx in enumerate(indices):
+                    if hasattr(features, "pooler_output"):
+                        emb = features.pooler_output[j].cpu().float().numpy().astype(np.float32)
+                    else:
+                        emb = features[j].cpu().float().numpy().astype(np.float32)
+                    results[orig_idx] = _normalize(emb)
 
         return results
     except Exception:

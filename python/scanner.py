@@ -58,8 +58,9 @@ def _infer_image(image_path: str) -> dict:
         "status": "ok",
         "error": None,
         "meta": {},
-        "faces": [],       # list of {bbox, embedding_bytes}
+        "faces": [],       # list of {bbox, embedding_bytes, det_score}
         "caption": None,
+        "tags": None,       # list of searchable tags
         "clip_embedding": None,
     }
 
@@ -69,12 +70,17 @@ def _infer_image(image_path: str) -> dict:
 
         if not hardware.skip_face_detection():
             result["faces"] = [
-                {"bbox": f["bbox"], "embedding_bytes": face_engine.embedding_to_bytes(f["embedding"])}
+                {
+                    "bbox": f["bbox"],
+                    "embedding_bytes": face_engine.embedding_to_bytes(f["embedding"]),
+                    "det_score": f.get("det_score", 0.0),
+                }
                 for f in face_engine.detect_faces(image_path)
             ]
 
         if not hardware.skip_captioning():
             result["caption"] = caption_engine.generate_caption(image_path)
+            result["tags"] = caption_engine.generate_tags(image_path)
 
         # CLIP embedding always runs (core search feature, lightest model)
         result["clip_embedding"] = clip_engine.embed_image(image_path)
@@ -106,6 +112,7 @@ def _infer_batch(image_paths: list[str]) -> list[dict]:
             "meta": {},
             "faces": [],
             "caption": None,
+            "tags": None,
             "clip_embedding": None,
         })
 
@@ -125,7 +132,11 @@ def _infer_batch(image_paths: list[str]) -> list[dict]:
         for i in ok_indices:
             try:
                 results[i]["faces"] = [
-                    {"bbox": f["bbox"], "embedding_bytes": face_engine.embedding_to_bytes(f["embedding"])}
+                    {
+                        "bbox": f["bbox"],
+                        "embedding_bytes": face_engine.embedding_to_bytes(f["embedding"]),
+                        "det_score": f.get("det_score", 0.0),
+                    }
                     for f in face_engine.detect_faces(image_paths[i])
                 ]
             except Exception:
@@ -146,7 +157,7 @@ def _infer_batch(image_paths: list[str]) -> list[dict]:
                 except Exception:
                     pass
 
-    # Batch captions
+    # Batch captions + tags
     if not hardware.skip_captioning() and ok_paths:
         try:
             captions = caption_engine.generate_captions_batch(ok_paths)
@@ -159,14 +170,27 @@ def _infer_batch(image_paths: list[str]) -> list[dict]:
                 except Exception:
                     pass
 
+        # Tags — sequential (each image needs its own inference pass)
+        for j, i in enumerate(ok_indices):
+            try:
+                results[i]["tags"] = caption_engine.generate_tags(image_paths[i])
+            except Exception:
+                pass
+
     return results
 
 
 def _persist_result(result: dict, db) -> Optional[int]:
     """Write one inference result to DB. Called from the single writer thread.
-    Returns the media_id if persisted, None otherwise."""
+    Returns the media_id if persisted, None otherwise.
+
+    Performs incremental face assignment: each face is matched against existing
+    person centroids. Only unmatched faces will need batch clustering later.
+    """
     import vector_store
+    import cluster_engine
     from models import MediaFile, Face
+    from face_engine import bytes_to_embedding
 
     if result["status"] != "ok":
         return None
@@ -177,6 +201,7 @@ def _persist_result(result: dict, db) -> Optional[int]:
         return None
 
     meta = result["meta"]
+    tags = result.get("tags")
     media = MediaFile(
         path=result["path"],
         file_hash=result["file_hash"],
@@ -188,6 +213,7 @@ def _persist_result(result: dict, db) -> Optional[int]:
         gps_lon=meta.get("gps_lon"),
         camera_model=meta.get("camera_model"),
         caption=result["caption"],
+        tags=json.dumps(tags) if tags else None,
         media_type="image",
         processed_at=datetime.utcnow(),
     )
@@ -195,11 +221,31 @@ def _persist_result(result: dict, db) -> Optional[int]:
     db.flush()  # assigns media.id without committing
 
     for face_data in result["faces"]:
-        db.add(Face(
+        face = Face(
             media_file_id=media.id,
             bbox_json=json.dumps(face_data["bbox"]),
             embedding=face_data["embedding_bytes"],
-        ))
+            det_score=face_data.get("det_score"),
+        )
+
+        # Incremental assignment: try to match to existing person
+        try:
+            emb = bytes_to_embedding(face_data["embedding_bytes"])
+            person_id = cluster_engine.assign_face_to_person(emb, db)
+            if person_id is not None:
+                face.person_id = person_id
+        except Exception:
+            pass
+
+        db.add(face)
+        db.flush()
+
+        # Update person centroid if we assigned this face
+        if face.person_id is not None:
+            try:
+                cluster_engine.update_person_centroid(face.person_id, db)
+            except Exception:
+                pass
 
     if result["clip_embedding"] is not None:
         faiss_id = vector_store.add_embedding(media.id, result["clip_embedding"])

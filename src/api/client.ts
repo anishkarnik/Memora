@@ -139,6 +139,9 @@ export const getHardwareInfo = () =>
 export const preloadModels = () =>
   request<{ status: string }>("POST", "/system/preload-models");
 
+export const wipeData = () =>
+  request<{ status: string }>("POST", "/system/wipe-data");
+
 // ── Settings ─────────────────────────────────────────────────────────────────
 
 export type CaptionModel = "moondream2" | "florence2" | "blip";

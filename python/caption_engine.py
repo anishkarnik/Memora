@@ -149,6 +149,123 @@ def generate_caption(image_path: str) -> Optional[str]:
         return None
 
 
+def generate_tags(image_path: str) -> Optional[list[str]]:
+    """Extract structured tags (scene, objects, colors, activities) from an image.
+    Uses the loaded caption model with a tag-extraction prompt."""
+    try:
+        _load()
+        import torch
+        from PIL import Image
+
+        image = Image.open(image_path).convert("RGB")
+
+        with _inference_context():
+            if _loaded_model_name == "florence2":
+                # Florence-2 supports structured tasks like <OD> and <MORE_DETAILED_CAPTION>
+                inputs = _processor(
+                    text="<MORE_DETAILED_CAPTION>", images=image, return_tensors="pt"
+                ).to(_device)
+                with torch.no_grad():
+                    generated_ids = _model.generate(
+                        **inputs, max_new_tokens=150, num_beams=3
+                    )
+                text = _processor.batch_decode(generated_ids, skip_special_tokens=False)[0]
+                parsed = _processor.post_process_generation(
+                    text, task="<MORE_DETAILED_CAPTION>",
+                    image_size=(image.width, image.height),
+                )
+                detail = parsed.get("<MORE_DETAILED_CAPTION>", "")
+                return _extract_tags_from_text(detail)
+
+            elif _loaded_model_name == "blip":
+                # BLIP: generate a detailed caption, extract tags from it
+                inputs = _processor(image, return_tensors="pt").to(_device)
+                with torch.no_grad():
+                    out = _model.generate(**inputs, max_new_tokens=100)
+                text = _processor.decode(out[0], skip_special_tokens=True)
+                return _extract_tags_from_text(text)
+
+            else:  # moondream2
+                image_embeds = _model.encode_image(image)
+                response = _model.answer_question(
+                    image_embeds,
+                    "List the key visual attributes of this image as comma-separated tags. "
+                    "Include: scene type (indoor/outdoor), setting (beach, office, park, etc), "
+                    "time of day if visible, colors of clothing, objects, activities, "
+                    "number of people, weather. Be concise.",
+                    _tokenizer,
+                )
+                if response:
+                    # Parse comma-separated tags
+                    tags = [t.strip().lower() for t in response.split(",") if t.strip()]
+                    return tags[:20] if tags else None
+                return None
+
+    except Exception:
+        return None
+
+
+def _extract_tags_from_text(text: str) -> Optional[list[str]]:
+    """Extract searchable tags from a descriptive text by splitting into
+    meaningful noun/adjective phrases."""
+    if not text:
+        return None
+
+    text = text.lower().strip()
+
+    # Known tag categories to look for
+    _SCENE_TAGS = {
+        "indoor", "outdoor", "beach", "mountain", "forest", "city", "street",
+        "park", "garden", "office", "home", "kitchen", "bedroom", "bathroom",
+        "restaurant", "cafe", "church", "temple", "lake", "river", "ocean",
+        "desert", "snow", "field", "farm", "market", "school", "hospital",
+        "wedding", "party", "concert", "stadium", "gym", "pool",
+    }
+    _TIME_TAGS = {
+        "sunrise", "sunset", "dawn", "dusk", "night", "evening",
+        "morning", "afternoon", "daytime", "nighttime",
+    }
+    _COLOR_TAGS = {
+        "red", "blue", "green", "yellow", "orange", "purple", "pink",
+        "black", "white", "gray", "grey", "brown", "gold", "silver",
+    }
+    _WEATHER_TAGS = {
+        "sunny", "cloudy", "rainy", "snowy", "foggy", "overcast", "clear",
+    }
+    _OBJECT_TAGS = {
+        "car", "dog", "cat", "tree", "flower", "food", "cake", "phone",
+        "laptop", "book", "bicycle", "motorcycle", "boat", "airplane",
+        "train", "bus", "umbrella", "hat", "glasses", "sunglasses",
+        "backpack", "bag", "chair", "table", "sofa", "bed",
+    }
+
+    all_known = _SCENE_TAGS | _TIME_TAGS | _COLOR_TAGS | _WEATHER_TAGS | _OBJECT_TAGS
+    found = []
+
+    words = set(text.replace(",", " ").replace(".", " ").replace(";", " ").split())
+    for tag in all_known:
+        if tag in words or tag in text:
+            found.append(tag)
+
+    # Also look for clothing color patterns like "red shirt", "blue dress"
+    _CLOTHING = ["shirt", "dress", "jacket", "coat", "pants", "jeans", "skirt",
+                  "sweater", "hoodie", "t-shirt", "suit", "tie", "scarf", "hat"]
+    for color in _COLOR_TAGS:
+        for item in _CLOTHING:
+            if f"{color} {item}" in text:
+                found.append(f"{color} {item}")
+
+    # Deduplicate while preserving order
+    seen = set()
+    unique = []
+    for t in found:
+        if t not in seen:
+            unique.append(t)
+            seen.add(t)
+
+    return unique if unique else None
+
+
 def generate_captions_batch(image_paths: list[str]) -> list[Optional[str]]:
     """Batch-generate captions. Moondream2 falls back to sequential (single-image API)."""
     if not image_paths:

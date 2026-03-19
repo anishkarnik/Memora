@@ -30,7 +30,7 @@ def _get_app():
 def detect_faces(image_path: str) -> list[dict]:
     """
     Returns list of dicts:
-      { bbox: [x1,y1,x2,y2], embedding: np.ndarray shape (512,) }
+      { bbox: [x1,y1,x2,y2], embedding: np.ndarray shape (512,), det_score: float }
     Returns [] on any error or no faces.
     """
     try:
@@ -43,15 +43,16 @@ def detect_faces(image_path: str) -> list[dict]:
         faces = app.get(img)
         results = []
         for face in faces:
+            score = float(face.det_score) if hasattr(face, 'det_score') else 0.0
             # Skip low-confidence detections — they produce noisy embeddings
-            if hasattr(face, 'det_score') and face.det_score < 0.6:
+            if score < 0.6:
                 continue
             bbox = face.bbox.astype(int).tolist()  # [x1,y1,x2,y2]
             # Skip faces too small to be reliable (< 40×40 px)
             if (bbox[2] - bbox[0]) * (bbox[3] - bbox[1]) < 1600:
                 continue
             emb = face.normed_embedding.astype(np.float32)
-            results.append({"bbox": bbox, "embedding": emb})
+            results.append({"bbox": bbox, "embedding": emb, "det_score": score})
         return results
     except Exception:
         return []

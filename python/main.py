@@ -478,6 +478,52 @@ def get_file(media_id: int, db: Session = Depends(database.get_db)):
 # Search
 # ---------------------------------------------------------------------------
 
+_TIME_OF_DAY_KEYWORDS = {
+    "morning": (5, 12),
+    "afternoon": (12, 17),
+    "evening": (17, 21),
+    "night": (21, 5),
+    "sunrise": (5, 7),
+    "sunset": (17, 19),
+    "dawn": (5, 7),
+    "dusk": (17, 19),
+}
+
+
+def _time_of_day_filter(query: str, db_session) -> set[int]:
+    """Check if query contains time-of-day keywords and return matching media IDs
+    based on EXIF date_taken hour."""
+    from sqlalchemy import extract
+    matched_ids: set[int] = set()
+    q_lower = query.lower()
+
+    for keyword, (start_h, end_h) in _TIME_OF_DAY_KEYWORDS.items():
+        if keyword in q_lower:
+            if start_h < end_h:
+                rows = (
+                    db_session.query(MediaFile.id)
+                    .filter(
+                        MediaFile.date_taken.isnot(None),
+                        extract("hour", MediaFile.date_taken) >= start_h,
+                        extract("hour", MediaFile.date_taken) < end_h,
+                    )
+                    .all()
+                )
+            else:  # wraps midnight (night: 21-5)
+                rows = (
+                    db_session.query(MediaFile.id)
+                    .filter(
+                        MediaFile.date_taken.isnot(None),
+                        (extract("hour", MediaFile.date_taken) >= start_h) |
+                        (extract("hour", MediaFile.date_taken) < end_h),
+                    )
+                    .all()
+                )
+            matched_ids.update(r[0] for r in rows)
+
+    return matched_ids
+
+
 @app.get("/search")
 def search(
     q: str = Query(""),
@@ -518,7 +564,7 @@ def search(
     if text_emb is not None:
         clip_results = vector_store.search(text_emb, k=limit * 2)
 
-    # Also do full-text search on captions
+    # Full-text search on captions
     caption_matches = (
         db.query(MediaFile)
         .filter(MediaFile.caption.ilike(f"%{q}%"))
@@ -527,19 +573,54 @@ def search(
     )
     fts_ids: set[int] = {m.id for m in caption_matches}
 
-    # Merge results: CLIP first, then FTS
+    # Tag search — match any tag that contains the query term
+    tag_matches = (
+        db.query(MediaFile)
+        .filter(MediaFile.tags.isnot(None), MediaFile.tags.ilike(f"%{q}%"))
+        .limit(limit)
+        .all()
+    )
+    tag_ids: set[int] = {m.id for m in tag_matches}
+
+    # Time-of-day search via EXIF date_taken
+    time_ids = _time_of_day_filter(q, db)
+
+    # Merge results: CLIP first, then tag matches, then FTS, then time-based
     seen: set[int] = set()
     merged: list[tuple[int, float]] = []
 
     for media_id, dist in clip_results:
         if media_id not in seen:
-            merged.append((media_id, dist))
+            # Boost score if also matched by tags or time
+            boost = 0.0
+            if media_id in tag_ids:
+                boost += 0.3
+            if media_id in time_ids:
+                boost += 0.2
+            if media_id in fts_ids:
+                boost += 0.1
+            merged.append((media_id, max(0, dist - boost)))
             seen.add(media_id)
+
+    # Add tag matches not in CLIP results (high relevance)
+    for mid in tag_ids:
+        if mid not in seen:
+            merged.append((mid, 5000.0))
+            seen.add(mid)
+
+    # Add time matches not yet seen
+    for mid in time_ids:
+        if mid not in seen:
+            merged.append((mid, 7000.0))
+            seen.add(mid)
 
     for mid in fts_ids:
         if mid not in seen:
             merged.append((mid, 9999.0))  # Low rank
             seen.add(mid)
+
+    # Re-sort by distance after boosting
+    merged.sort(key=lambda x: x[1])
 
     # Filter by person if requested
     if person_id is not None:
@@ -591,11 +672,50 @@ def update_settings(req: SettingsRequest):
     return data
 
 
+@app.post("/system/wipe-data")
+def wipe_data(db: Session = Depends(database.get_db)):
+    """Delete all user data (DB, FAISS, Thumbnails) but keep downloaded models."""
+    import shutil
+    import models
+    import vector_store
+    
+    # Cancel active scan
+    scanner.cancel_scan()
+    
+    # Wipe database tables
+    db.query(models.Face).delete()
+    db.query(models.Person).delete()
+    db.query(models.ScanJob).delete()
+    db.query(models.MediaFile).delete()
+    db.commit()
+    
+    # Reset FAISS index
+    vector_store.rebuild_from_db(db)
+    
+    # Wipe face thumbnails
+    if FACE_THUMB_DIR.exists():
+        shutil.rmtree(FACE_THUMB_DIR)
+        FACE_THUMB_DIR.mkdir()
+        
+    # Wipe media thumbnails
+    if THUMB_DIR.exists():
+        shutil.rmtree(THUMB_DIR)
+        THUMB_DIR.mkdir()
+        
+    return {"status": "wiped"}
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 def _media_summary(m: MediaFile) -> dict:
+    tags = None
+    if m.tags:
+        try:
+            tags = json.loads(m.tags)
+        except Exception:
+            pass
     return {
         "id": m.id,
         "path": m.path,
@@ -606,6 +726,7 @@ def _media_summary(m: MediaFile) -> dict:
         "format": m.format,
         "date_taken": m.date_taken.isoformat() if m.date_taken else None,
         "caption": m.caption,
+        "tags": tags,
         "media_type": m.media_type,
     }
 

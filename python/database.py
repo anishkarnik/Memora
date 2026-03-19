@@ -27,6 +27,25 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=ENGINE)
 
 def init_db() -> None:
     Base.metadata.create_all(bind=ENGINE)
+    _migrate_schema()
+
+
+def _migrate_schema() -> None:
+    """Add columns introduced after initial schema. SQLite ALTER TABLE ADD COLUMN
+    is safe to call even if the column already exists (we catch the error)."""
+    import sqlite3
+    conn = sqlite3.connect(str(DB_PATH))
+    migrations = [
+        "ALTER TABLE faces ADD COLUMN det_score REAL",
+        "ALTER TABLE media_files ADD COLUMN tags TEXT",
+    ]
+    for stmt in migrations:
+        try:
+            conn.execute(stmt)
+        except sqlite3.OperationalError:
+            pass  # column already exists
+    conn.commit()
+    conn.close()
 
 
 def get_db():

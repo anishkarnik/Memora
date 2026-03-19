@@ -5,6 +5,7 @@ import {
   updateSettings,
   getHardwareInfo,
   startScan,
+  wipeData,
   Settings,
   CaptionModel,
   EmbeddingModel,
@@ -391,12 +392,33 @@ export default function SettingsTab({ onScanStart }: { onScanStart: () => void }
       {/* Storage info */}
       <div className="settings-section">
         <h2>Storage</h2>
-        <p style={{ fontSize: 13, color: "var(--text-muted)" }}>
-          Database and models are stored in <code>~/.memora/</code>
-        </p>
-        <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 6 }}>
-          All data stays on your machine — nothing is ever sent to the cloud.
-        </p>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+          <div>
+            <p style={{ fontSize: 13, color: "var(--text-muted)" }}>
+              Database and models are stored in <code>~/.memora/</code>
+            </p>
+            <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 6, marginBottom: 12 }}>
+              All data stays on your machine — nothing is ever sent to the cloud.
+            </p>
+          </div>
+          <button
+            className="btn btn-secondary"
+            style={{ background: "rgba(239, 68, 68, 0.1)", color: "#ef4444", border: "1px solid rgba(239, 68, 68, 0.4)" }}
+            onClick={async () => {
+              if (confirm("Are you sure you want to delete all photos, faces, and captions? Your downloaded models will be kept.")) {
+                try {
+                  await wipeData();
+                  alert("All data wiped successfully! The page will now reload.");
+                  window.location.reload();
+                } catch (e) {
+                  alert("Failed to wipe data: " + String(e));
+                }
+              }
+            }}
+          >
+            Wipe App Data
+          </button>
+        </div>
       </div>
 
     </div>
