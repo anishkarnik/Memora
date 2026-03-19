@@ -91,6 +91,9 @@ export default function SearchTab() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
+      <div className="content-header" style={{ paddingBottom: 8 }}>
+        <h1 className="content-title">Search</h1>
+      </div>
 
       {/* ── People filter bar ─────────────────────────────────── */}
       {people.length > 0 && (

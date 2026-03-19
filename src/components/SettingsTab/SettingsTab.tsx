@@ -147,7 +147,10 @@ export default function SettingsTab({ onScanStart }: { onScanStart: () => void }
   }
 
   return (
-    <div className="settings-wrap">
+    <div className="settings-wrap" style={{ paddingTop: 0 }}>
+      <div className="content-header" style={{ padding: "20px 0 16px", maxWidth: "none" }}>
+        <h1 className="content-title">Settings</h1>
+      </div>
 
       {/* System Info */}
       {hwInfo && (
@@ -196,8 +199,8 @@ export default function SettingsTab({ onScanStart }: { onScanStart: () => void }
               onChange={(e) => setSettings((s) => ({ ...s, performance_profile: e.target.value as PerformanceProfile }))}
               style={{
                 padding: "6px 10px", borderRadius: 6, fontSize: 13,
-                background: "var(--bg-secondary)", color: "var(--text-primary)",
-                border: "1px solid var(--border-color)",
+                background: "#fff", color: "var(--text)",
+                border: "1px solid var(--border)",
               }}
             >
               {PROFILE_OPTIONS.map((o) => (

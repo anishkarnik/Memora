@@ -70,7 +70,7 @@ function PersonDetail({
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
-      <div style={{ padding: "12px 16px", display: "flex", alignItems: "center", gap: 12, borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
+      <div style={{ padding: "16px 32px", display: "flex", alignItems: "center", gap: 12, borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
         {/* Face avatar */}
         <div style={{ width: 40, height: 40, borderRadius: "50%", overflow: "hidden", flexShrink: 0, background: "var(--surface2)" }}>
           <FaceImg relUrl={person.face_thumbnail_url} alt={person.name ?? "Unknown"} />
@@ -236,33 +236,37 @@ export default function PeopleTab() {
   const unnamedPeople = people.filter((p) => p.name === null);
 
   const toolbar = (
-    <div style={{ padding: "10px 16px", borderBottom: "1px solid var(--border)", flexShrink: 0, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-      <span style={{ color: "var(--text-muted)", fontSize: 13 }}>
-        {namedPeople.length} named · {unnamedPeople.length} unknown
-      </span>
-      <button className="btn btn-secondary" onClick={handleRecluster} disabled={reclustering || mergeMode}>
-        {reclustering ? "Clustering…" : "Re-cluster Faces"}
-      </button>
-      {mergeMode ? (
-        <>
-          <span style={{ color: "var(--accent)", fontSize: 13 }}>
-            {mergeSource
-              ? `Now click who to merge "${mergeSource.name ?? `Unknown #${mergeSource.id}`}" into`
-              : "Click the person to merge away"}
+    <>
+      <div className="content-header">
+        <h1 className="content-title">People</h1>
+        <div className="content-header-actions">
+          <span style={{ color: "var(--text-muted)", fontSize: 13 }}>
+            {namedPeople.length} named · {unnamedPeople.length} unknown
           </span>
-          <button className="btn btn-secondary" onClick={cancelMerge}>Cancel</button>
-        </>
-      ) : (
-        <button
-          className="btn btn-secondary"
-          style={{ marginLeft: "auto" }}
-          onClick={() => setMergeMode(true)}
-          disabled={people.length < 2}
-        >
-          Merge two people
-        </button>
-      )}
-    </div>
+          <button className="btn btn-secondary" onClick={handleRecluster} disabled={reclustering || mergeMode}>
+            {reclustering ? "Clustering..." : "Re-cluster"}
+          </button>
+          {mergeMode ? (
+            <>
+              <span style={{ color: "var(--accent)", fontSize: 13 }}>
+                {mergeSource
+                  ? `Click target for "${mergeSource.name ?? `#${mergeSource.id}`}"`
+                  : "Click person to merge away"}
+              </span>
+              <button className="btn btn-secondary" onClick={cancelMerge}>Cancel</button>
+            </>
+          ) : (
+            <button
+              className="btn btn-secondary"
+              onClick={() => setMergeMode(true)}
+              disabled={people.length < 2}
+            >
+              Merge
+            </button>
+          )}
+        </div>
+      </div>
+    </>
   );
 
   if (people.length === 0) {
