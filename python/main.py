@@ -463,7 +463,15 @@ def get_thumbnail(media_id: int, db: Session = Depends(database.get_db)):
         except Exception:
             # Fall back to original if thumbnail generation fails
             return FileResponse(media.path)
-    return FileResponse(str(thumb), media_type="image/jpeg")
+    return FileResponse(
+        str(thumb),
+        media_type="image/jpeg",
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
 
 
 @app.get("/media/{media_id}/file")

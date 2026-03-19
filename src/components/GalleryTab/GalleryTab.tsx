@@ -10,9 +10,10 @@ import {
 function ImgProxy({ relUrl, alt, className }: { relUrl: string; alt: string; className?: string }) {
   const [src, setSrc] = useState<string>("");
   useEffect(() => {
-    ensureSidecarPort().then((port) =>
-      setSrc(`http://127.0.0.1:${port}${relUrl}`)
-    );
+    ensureSidecarPort().then((port) => {
+      const sep = relUrl.includes("?") ? "&" : "?";
+      setSrc(`http://127.0.0.1:${port}${relUrl}${sep}_t=${Date.now()}`);
+    });
   }, [relUrl]);
   return <img src={src} alt={alt} className={className} loading="lazy" />;
 }

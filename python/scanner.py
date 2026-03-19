@@ -255,15 +255,14 @@ def _persist_result(result: dict, db) -> Optional[int]:
 
 
 def _try_generate_thumbnail(image_path: str, media_id: int) -> None:
-    """Pre-generate thumbnail during scan (non-fatal)."""
+    """Pre-generate thumbnail during scan (non-fatal).
+    Always overwrites — stale thumbnails from ID reuse after wipe cause wrong images."""
     try:
         from PIL import Image, ImageOps
 
         thumb_dir = Path.home() / ".memora" / "thumbnails"
-        dest = thumb_dir / f"{media_id}.jpg"
-        if dest.exists():
-            return
         thumb_dir.mkdir(parents=True, exist_ok=True)
+        dest = thumb_dir / f"{media_id}.jpg"
         with Image.open(image_path) as img:
             img = ImageOps.exif_transpose(img)
             img = img.convert("RGB")

@@ -10,9 +10,10 @@ import {
 function ImgProxy({ relUrl, alt }: { relUrl: string; alt: string }) {
   const [src, setSrc] = useState("");
   useEffect(() => {
-    ensureSidecarPort().then((port) =>
-      setSrc(`http://127.0.0.1:${port}${relUrl}`)
-    );
+    ensureSidecarPort().then((port) => {
+      const sep = relUrl.includes("?") ? "&" : "?";
+      setSrc(`http://127.0.0.1:${port}${relUrl}${sep}_t=${Date.now()}`);
+    });
   }, [relUrl]);
   return <img src={src} alt={alt} loading="lazy" />;
 }
@@ -29,7 +30,7 @@ function FaceChip({
   const [src, setSrc] = useState("");
   useEffect(() => {
     ensureSidecarPort().then((port) =>
-      setSrc(`http://127.0.0.1:${port}${person.face_thumbnail_url}`)
+      setSrc(`http://127.0.0.1:${port}${person.face_thumbnail_url}&_t=${Date.now()}`)
     );
   }, [person.face_thumbnail_url]);
 
@@ -206,7 +207,7 @@ function ActivePersonBadge({
   const [src, setSrc] = useState("");
   useEffect(() => {
     ensureSidecarPort().then((port) =>
-      setSrc(`http://127.0.0.1:${port}${person.face_thumbnail_url}`)
+      setSrc(`http://127.0.0.1:${port}${person.face_thumbnail_url}&_t=${Date.now()}`)
     );
   }, [person.face_thumbnail_url]);
 

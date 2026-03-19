@@ -13,7 +13,10 @@ import {
 function FaceImg({ relUrl, alt }: { relUrl: string; alt: string }) {
   const [src, setSrc] = useState("");
   useEffect(() => {
-    ensureSidecarPort().then((port) => setSrc(`http://127.0.0.1:${port}${relUrl}`));
+    ensureSidecarPort().then((port) => {
+      const sep = relUrl.includes("?") ? "&" : "?";
+      setSrc(`http://127.0.0.1:${port}${relUrl}${sep}_t=${Date.now()}`);
+    });
   }, [relUrl]);
   return (
     <img
@@ -28,7 +31,10 @@ function FaceImg({ relUrl, alt }: { relUrl: string; alt: string }) {
 function ImgProxy({ relUrl, alt }: { relUrl: string; alt: string }) {
   const [src, setSrc] = useState("");
   useEffect(() => {
-    ensureSidecarPort().then((port) => setSrc(`http://127.0.0.1:${port}${relUrl}`));
+    ensureSidecarPort().then((port) => {
+      const sep = relUrl.includes("?") ? "&" : "?";
+      setSrc(`http://127.0.0.1:${port}${relUrl}${sep}_t=${Date.now()}`);
+    });
   }, [relUrl]);
   return <img src={src} alt={alt} loading="lazy" />;
 }
